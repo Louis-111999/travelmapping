@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>旅マップ｜行きたい・行った</title>
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <!-- MarkerCluster CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif; }
+    .wrap { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+    header { padding: 12px 16px; border-bottom: 1px solid #eee; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    header h1 { font-size: 16px; margin: 0; font-weight: 700; }
+    .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .pill { border:1px solid #ddd; border-radius:999px; padding:6px 10px; background:#fff; display:inline-flex; gap:6px; align-items:center; cursor:pointer; }
+    .pill input { margin:0; }
+    #map { height: 100%; width: 100%; }
+    .legend { background:#fff; padding:8px 10px; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,.08); font-size:12px; }
+    .legend .row { display:flex; align-items:center; gap:6px; margin:4px 0; }
+    .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+    .dot.want { background:#E11D48; }
+    .dot.went { background:#2563EB; }
+    .search { border:1px solid #ddd; border-radius:8px; padding:6px 8px; width:200px; }
+    .credit { font-size: 11px; color:#666; margin-left:auto; }
+    .leaflet-popup-content { font-size: 14px; }
+    .place-title { font-weight:700; margin:0 0 4px; font-size:15px; }
+    .badge { font-size:11px; padding:3px 6px; border-radius:999px; color:#fff; display:inline-block; }
+    .badge.want { background:#E11D48; }
+    .badge.went { background:#2563EB; }
+    .note { color:#444; margin:6px 0 0; }
+    .popup-actions { margin-top:8px; }
+    .popup-actions a { font-size:12px; text-decoration:underline; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>旅マップ｜行きたい・行った</h1>
+    <div class="toolbar">
+      <label class="pill"><input type="checkbox" id="toggleWant" checked> 行きたい</label>
+      <label class="pill"><input type="checkbox" id="toggleWent" checked> 行った</label>
+      <input id="searchInput" class="search" type="search" placeholder="場所名で検索" />
+    </div>
+    <div class="credit">Powered by Leaflet / OSM（無料）</div>
+  </header>
+  <div id="map"></div>
+</div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<!-- MarkerCluster -->
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<!-- Fuse.js for lightweight fuzzy search -->
+<script src="https://cdn.jsdelivr.net/npm/fuse.js@6.6.2"></script>
+<script>
+  // ======= 設定 =======
+  // 1) データの置き場所を選ぶ：
+  //    A. このファイル内の DATA 変数を編集（最も簡単）
+  //    B. GitHub Gist / GitHub Pages の JSON を公開して DATA_URL に差し替え（Notionからも自動更新反映）
+  const USE_REMOTE_DATA = false; // true にすると DATA_URL から取得
+  const DATA_URL = "https://raw.githubusercontent.com/yourname/yourrepo/main/places.json"; // 例: 公開JSONのURL
+
+  // データ形式：配列。status は "want"（行きたい） or "went"（行った）
+  // icon は省略可。url は公式/食べログ/Googleマップなどへのリンク
+  const DATA = [
+    { name: "青い池 (美瑛)", lat: 43.533, lng: 142.463, status: "want", note: "朝の時間帯が綺麗", url: "https://maps.app.goo.gl/..." },
+    { name: "五稜郭公園 (函館)", lat: 41.796, lng: 140.756, status: "went", note: "桜の季節が最高", url: "https://maps.app.goo.gl/..." },
+    { name: "富良野ラベンダー畑", lat: 43.417, lng: 142.414, status: "want", note: "7月上旬〜中旬", url: "https://maps.app.goo.gl/..." },
+    { name: "旭山動物園", lat: 43.768, lng: 142.482, status: "went", note: "ペンギン散歩", url: "https://maps.app.goo.gl/..." }
+  ];
+
+  // ======= 地図初期化 =======
+  const map = L.map('map', {
+    scrollWheelZoom: true,
+    zoomControl: true,
+  });
+  const tiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  // カスタムアイコン（Notionでも映えるようにビビッド）
+  const iconWant = L.divIcon({ className: 'custom-icon', html: '<div class="dot want"></div>', iconSize: [12,12] });
+  const iconWent = L.divIcon({ className: 'custom-icon', html: '<div class="dot went"></div>', iconSize: [12,12] });
+
+  const clusterWant = L.markerClusterGroup({ disableClusteringAtZoom: 11 });
+  const clusterWent = L.markerClusterGroup({ disableClusteringAtZoom: 11 });
+
+  let allMarkers = []; // 検索用
+
+  function markerFor(place) {
+    const isWant = place.status === 'want';
+    const icon = isWant ? iconWant : iconWent;
+    const m = L.marker([place.lat, place.lng], { icon });
+    const badge = `<span class="badge ${isWant ? 'want' : 'went'}">${isWant ? '行きたい' : '行った'}</span>`;
+    const link = place.url ? `<div class="popup-actions"><a href="${place.url}" target="_blank" rel="noopener">Googleマップ等を開く</a></div>` : '';
+    m.bindPopup(`
+      <p class="place-title">${place.name} ${badge}</p>
+      ${place.note ? `<p class="note">${place.note}</p>` : ''}
+      ${link}
+    `);
+    m.place = place; // 検索用参照
+    return m;
+  }
+
+  async function loadData() {
+    let items = DATA;
+    if (USE_REMOTE_DATA) {
+      try {
+        const res = await fetch(DATA_URL);
+        items = await res.json();
+      } catch (e) { console.error('データ取得エラー', e); }
+    }
+    render(items);
+  }
+
+  function render(items) {
+    clusterWant.clearLayers();
+    clusterWent.clearLayers();
+    allMarkers = [];
+
+    items.forEach(p => {
+      const m = markerFor(p);
+      allMarkers.push(m);
+      if (p.status === 'want') clusterWant.addLayer(m); else clusterWent.addLayer(m);
+    });
+
+    clusterWant.addTo(map);
+    clusterWent.addTo(map);
+
+    // フィット
+    const group = L.featureGroup([...clusterWant.getLayers(), ...clusterWent.getLayers()]);
+    if (group.getLayers().length) {
+      map.fitBounds(group.getBounds().pad(0.2));
+    } else {
+      map.setView([35.681, 139.767], 5); // 日本付近
+    }
+
+    // 凡例
+    const legend = L.control({position: 'bottomleft'});
+    legend.onAdd = function() {
+      const div = L.DomUtil.create('div', 'legend');
+      div.innerHTML = `
+        <div class="row"><span class="dot want"></span> 行きたい</div>
+        <div class="row"><span class="dot went"></span> 行った</div>
+      `;
+      return div;
+    };
+    legend.addTo(map);
+  }
+
+  // トグル表示
+  document.getElementById('toggleWant').addEventListener('change', (e) => {
+    if (e.target.checked) map.addLayer(clusterWant); else map.removeLayer(clusterWant);
+  });
+  document.getElementById('toggleWent').addEventListener('change', (e) => {
+    if (e.target.checked) map.addLayer(clusterWent); else map.removeLayer(clusterWent);
+  });
+
+  // あいまい検索
+  const fuse = new Fuse([], { keys: ['place.name'], threshold: 0.3, includeScore: true });
+  function refreshFuse() {
+    fuse.setCollection(allMarkers.map(m => ({ marker: m, place: m.place })));
+  }
+  document.getElementById('searchInput').addEventListener('input', (e) => {
+    const q = e.target.value.trim();
+    if (!q) return; 
+    const hits = fuse.search(q, { limit: 1 });
+    if (hits.length) {
+      const { marker } = hits[0].item;
+      map.setView(marker.getLatLng(), 13);
+      marker.openPopup();
+    }
+  });
+
+  loadData().then(refreshFuse);
+</script>
+</body>
+</html>
